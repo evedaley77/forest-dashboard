@@ -6,7 +6,8 @@ import streamlit as st
 
 import loader
 
-st.set_page_config(page_title="CNN User Journeys Regression Testing - Automation Dashboard", page_icon=":material/monitoring:", layout="wide")
+st.set_page_config(page_title="CNN User Journeys Regression Testing - Automation Dashboard", page_icon=":material/monitoring:", layout="wide",
+                   initial_sidebar_state="collapsed")
 
 STATUS_COLORS = {"Passed": "#2E9D5B", "Failed": "#E5484D", "Unknown": "#9AA0A6"}
 
@@ -21,83 +22,92 @@ def fmt_mb(path: Path) -> str:
     return f"{path.stat().st_size / 1_048_576:,.1f} MB"
 
 
-# ---------------------------------------------------------------- sidebar: choose / import files
-with st.sidebar:
-    st.header("Log files")
-    folder = Path(
-        st.text_input("Look for exports in", value=str(Path.home() / "Downloads"), help="Matches Forest2_Results*.csv")
-    ).expanduser()
+# ---------------------------------------------------------------- header + filter bar (top of page)
+TITLE = "CNN User Journeys Regression Testing - Automation Dashboard"
+st.title(TITLE)
+caption_slot = st.empty()
 
-    uploaded = st.file_uploader("Import another log file", type=["csv"], help="Saved to forest_dashboard/imports")
-    if uploaded is not None and st.session_state.get("_last_upload") != uploaded.file_id:
-        loader.IMPORT_DIR.mkdir(exist_ok=True)
-        dest = loader.IMPORT_DIR / uploaded.name
-        dest.write_bytes(uploaded.getbuffer())
-        st.session_state["_last_upload"] = uploaded.file_id
-        st.session_state["files"] = [str(dest.resolve())]
-        st.rerun()
+ALL = "All test names"
+with st.container(border=True):
+    row1 = st.columns(4)
+    row2 = st.columns(5, vertical_alignment="bottom")
+
+    # Folder + import live in a popover so the bar stays compact.
+    with row2[4].popover("Import / folder", icon=":material/upload_file:", width="stretch"):
+        folder = Path(
+            st.text_input("Look for exports in", value=str(Path.home() / "Downloads"), help="Matches Forest2_Results*.csv")
+        ).expanduser()
+        uploaded = st.file_uploader("Import another log file", type=["csv"], help="Saved to the imports folder")
+        if uploaded is not None and st.session_state.get("_last_upload") != uploaded.file_id:
+            loader.IMPORT_DIR.mkdir(exist_ok=True)
+            dest = loader.IMPORT_DIR / uploaded.name
+            dest.write_bytes(uploaded.getbuffer())
+            st.session_state["_last_upload"] = uploaded.file_id
+            st.session_state["files"] = [str(dest.resolve())]
+            st.rerun()
 
     exports = loader.list_exports(loader.IMPORT_DIR, folder)
     by_path = {str(p.resolve()): p for p in exports}
     if not by_path:
-        st.info(f"No Forest2_Results*.csv files in {folder} or imports. Upload one above.")
+        st.info(f"No Forest2_Results*.csv files in {folder} or imports. Use Import / folder above.")
         st.stop()
 
     st.session_state["files"] = [f for f in st.session_state.get("files", []) if f in by_path] or [next(iter(by_path))]
-    chosen = st.multiselect(
-        "Show data from",
-        options=list(by_path),
-        key="files",
-        format_func=lambda k: f"{by_path[k].name} ({fmt_mb(by_path[k])})",
-        help="Pick one or several exports; runs are de-duplicated by source file.",
-    )
+    with row1[0]:
+        chosen = st.multiselect(
+            "Log file",
+            options=list(by_path),
+            key="files",
+            format_func=lambda k: f"{by_path[k].name} ({fmt_mb(by_path[k])})",
+            help="Pick one or several exports; runs are de-duplicated by source file.",
+        )
     if not chosen:
         st.info("Select at least one log file.")
         st.stop()
-    st.caption("Created using Anthropic Claude. Keep on internal versions until a human has reviewed and verified it.")
 
-# ---------------------------------------------------------------- load
-frames = []
-for key in chosen:
-    p = by_path[key]
-    stt = p.stat()
-    frames.append(load(key, stt.st_size, stt.st_mtime))
-df = pd.concat(frames, ignore_index=True)
-df = df.sort_values("started_at", na_position="first").drop_duplicates("source_file", keep="last")
-df["run_date"] = pd.to_datetime(df["run_date"])
-df["artifact_name"] = df["artifact_name"].fillna(df["workflow"]).fillna("(unknown)")
+    # ------------------------------------------------------------ load
+    frames = []
+    for key in chosen:
+        p = by_path[key]
+        stt = p.stat()
+        frames.append(load(key, stt.st_size, stt.st_mtime))
+    df = pd.concat(frames, ignore_index=True)
+    df = df.sort_values("started_at", na_position="first").drop_duplicates("source_file", keep="last")
+    df["run_date"] = pd.to_datetime(df["run_date"])
+    df["artifact_name"] = df["artifact_name"].fillna(df["workflow"]).fillna("(unknown)")
+
+    # ------------------------------------------------------------ filters
+    lo, hi = df["run_date"].min().date(), df["run_date"].max().date()
+    with row1[1]:
+        dates = st.date_input("Date range", value=(lo, hi), min_value=lo, max_value=hi, key=f"dates_{lo}_{hi}")
+    if len(dates) != 2:
+        st.info("Pick an end date.")
+        st.stop()
+
+    in_dates = df[(df["run_date"] >= pd.Timestamp(dates[0])) & (df["run_date"] <= pd.Timestamp(dates[1]))]
+    with row1[2]:
+        test_pick = st.selectbox(
+            "Test name", [ALL] + sorted(in_dates["test_name"].dropna().unique()),
+            help="Show only the line items for one test.",
+        )
+    with row1[3]:
+        artifacts = st.multiselect("Artifact name", sorted(in_dates["artifact_name"].unique()), placeholder="All")
+
+    def multi(slot, label: str, col: str):
+        with slot:
+            return st.multiselect(label, sorted(df[col].dropna().unique()), placeholder="All")
+
+    workflows = multi(row2[0], "Workflow", "workflow")
+    brands = multi(row2[1], "Brand", "brand")
+    platforms = multi(row2[2], "Platform", "platform")
+    with row2[3]:
+        statuses = st.multiselect("Status", list(STATUS_COLORS), placeholder="All")
 
 if df["status"].eq("Unknown").all():
     st.warning(
         "These exports only list workflow and source file names (no results payload), so pass/fail "
         "is unknown. Pick a full export for pass rates and durations."
     )
-
-# ---------------------------------------------------------------- sidebar: filters
-with st.sidebar:
-    st.header("Filters")
-    lo, hi = df["run_date"].min().date(), df["run_date"].max().date()
-    sig = f"{lo}_{hi}"
-    dates = st.date_input("Date range", value=(lo, hi), min_value=lo, max_value=hi, key=f"dates_{sig}")
-    if len(dates) != 2:
-        st.info("Pick an end date.")
-        st.stop()
-
-    def multi(label: str, col: str):
-        opts = sorted(df[col].dropna().unique())
-        return st.multiselect(label, opts, placeholder="All")
-
-    in_dates = df[(df["run_date"] >= pd.Timestamp(dates[0])) & (df["run_date"] <= pd.Timestamp(dates[1]))]
-    ALL = "All test names"
-    test_pick = st.selectbox(
-        "Test name", [ALL] + sorted(in_dates["test_name"].dropna().unique()),
-        help="Show only the line items for one test.",
-    )
-    artifacts = st.multiselect("Artifact name", sorted(in_dates["artifact_name"].unique()), placeholder="All")
-    workflows = multi("Workflow", "workflow")
-    brands = multi("Brand", "brand")
-    platforms = multi("Platform", "platform")
-    statuses = st.pills("Status", list(STATUS_COLORS), selection_mode="multi") or []
 
 f = df[(df["run_date"] >= pd.Timestamp(dates[0])) & (df["run_date"] <= pd.Timestamp(dates[1]))]
 if test_pick != ALL:
@@ -107,8 +117,7 @@ for col, picked in [("artifact_name", artifacts), ("workflow", workflows), ("bra
         f = f[f[col].isin(picked)]
 
 # ---------------------------------------------------------------- main
-st.title("CNN User Journeys Regression Testing - Automation Dashboard")
-st.caption(f"{len(chosen)} file(s) · {dates[0]:%b %d, %Y} to {dates[1]:%b %d, %Y} · {len(f):,} of {len(df):,} runs")
+caption_slot.caption(f"{len(chosen)} file(s) · {dates[0]:%b %d, %Y} to {dates[1]:%b %d, %Y} · {len(f):,} of {len(df):,} runs")
 
 if f.empty:
     st.info("No runs match these filters.")
@@ -190,3 +199,5 @@ with tab_tests:
     st.dataframe(t, column_config={"pass_rate": st.column_config.ProgressColumn("Pass rate", min_value=0, max_value=1, format="percent"),
                                    "avg_duration_s": st.column_config.NumberColumn("Avg duration (s)", format="%.0f")},
                  alt="Pass rate per test")
+
+st.caption("Created using Anthropic Claude. Keep on internal versions until a human has reviewed and verified it.")

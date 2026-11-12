@@ -1,6 +1,7 @@
 [theme]
 base = "light"
 primaryColor = "#E5484D"
+baseRadius = "large"
 
 [server]
 # Nightly exports can be several hundred MB.
