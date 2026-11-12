@@ -1,0 +1,7 @@
+[theme]
+base = "light"
+primaryColor = "#E5484D"
+
+[server]
+# Nightly exports can be several hundred MB.
+maxUploadSize = 2048
