@@ -2,3 +2,5 @@
 .cache/
 imports/
 __pycache__/
+.agents/
+.claude/
