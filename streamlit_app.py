@@ -35,7 +35,7 @@ with st.container(border=True):
     # Folder + import live in a popover so the bar stays compact.
     with row2[4].popover("Import / folder", icon=":material/upload_file:", width="stretch"):
         folder = Path(
-            st.text_input("Look for exports in", value=str(Path.home() / "Downloads"), help="Matches Forest2_Results*.csv")
+            st.text_input("Look for exports in", value=str(loader.IMPORT_DIR), help="Matches Forest2_Results*.csv. Defaults to the dashboard's imports folder; enter another path (e.g. ~/Downloads) to browse more exports.")
         ).expanduser()
         uploaded = st.file_uploader("Import another log file", type=["csv"], help="Saved to the imports folder")
         if uploaded is not None and st.session_state.get("_last_upload") != uploaded.file_id:
